@@ -1,6 +1,6 @@
 # Text Analysis for Goodreads Descriptions of Banned Books
 
-*Completed as a final project for Carnegie Mellon University's 36668 Text Analysis course*
+*Completed as a final project for Carnegie Mellon University's 36668 Graduate Text Analysis course*
 
 To quote Ray Bradbury’s “Fahrenheit 451”, “A book is a loaded gun in the house next door”
 (Bradbury (1951)). Ironically, it seems that an increasing number of schools across the United
