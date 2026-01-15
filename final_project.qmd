@@ -1,0 +1,520 @@
+---
+title: "Fighting Fire with Fire"
+subtitle: "Using Fahrenheit 451 Logic to Analyze Literary Differences in Goodreads Ratings Across School-Banned Books"
+author: "Nikita Jayaprakash"
+date: last-modified
+format:
+  pdf:
+    number-sections: true
+    indent: true
+    include-in-header:
+      text: |
+        \addtokomafont{disposition}{\rmfamily}
+bibliography: references/final-refs.bib
+execute:
+  echo: false
+---
+
+# Introduction
+
+To quote Ray Bradbury's "Fahrenheit 451", "A book is a loaded gun in the house next door" (@fahrenheit). Ironically, it seems that an increasing number of schools across the United States has taken this literary advice to heart. PEN America keeps track of school book bans, and they reported 4,231 unique titles that were banned between July 1, 2023 to June 30, 2024; note that this encapsulates 10,046 instances of individual books banned across different schools in the United States (@penAmerica). We will use only a subset of these books during the same time period. This analysis is interested in comparing the Goodreads descriptions for books that are "more banned" (i.e. banned in more than 1 state within a single year) and books that are "less banned" (i.e. books banned in 1 state within a single year). In particular, this analysis explored the following questions:
+
+-   How do the literary features differ between the Goodreads descriptions of more-banned and less-banned books?
+-   What are the keywords that differ between the Goodreads descriptions of more-banned and less-banned books?
+-   Do the frequencies of these keywords and/or the occurrence of these features differ based on when they were banned within the year?
+
+Using Goodreads descriptions rather than the full texts of the novels allows for easier access (especially with more recent books that aren't freely available). In addition, the use of Goodreads descriptions rather than the actual books allows for a focus on a larger breadth of banned books and is not restricted by copyright laws. Admittedly, this unfortunately partakes in another unfortunate logic highlighted in *Fahrenheit 451*, which is using summaries of books rather than the full text of the book (@fahrenheit). However, it is easier to assess topics of a book from the Goodreads description since these descriptions will mention general narrative details more explicitly rather than the subtlety in the actual novel. For this reason, we hypothesize that there will be literary differences and differences in keywords across more-banned and less-banned books.
+
+# Data
+
+This analysis uses web-scraped Goodreads descriptions (and other variables like publication date, average rating, number of ratings) of a subset of the books that were banned between July 1, 2023 to June 30, 2024, based on the list published by PEN America (@penAmerica). As shown in @tbl-corpus, only 2713 descriptions -- 2149 are "less banned" descriptions and 564 are "more banned" descriptions -- out of 4239 listed on PEN America were successfully scraped, so this is still a convenience sample. This limits the possible generalizations of the data because we are focusing on the books banned within a year.
+This analysis uses web-scraped Goodreads descriptions (and other variables like publication date, average rating, number of ratings) of a subset of the books that were banned between July 1, 2023 to June 30, 2024, based on the list published by PEN America (@penAmerica).
+
+```{r, message = F, echo = F}
+library(tidyverse)
+library(mda.biber)
+library(quanteda)
+library(quanteda.textstats)
+library(quanteda.extras)
+library(sparkline)
+library(gt)
+biber_fts <- read_csv("../FinalProject/biber.csv") |>
+  drop_na()
+banned <- read.csv("../FinalProject/banned.csv")
+annotation <- read_csv("../FinalProject/annotation.csv")
+```
+
+```{r, echo = F}
+banned_corpus <- banned |>
+  select(goodreads_description, doc_id) |>
+  mutate(text = preprocess_text(goodreads_description)) |>
+  corpus()
+doc_categories <- banned |>
+  dplyr::select(doc_id) |>
+  mutate(doc_id = str_extract(doc_id, "^[^\\d]+")) |>
+  rename(text_type = doc_id)
+docvars(banned_corpus) <- doc_categories
+banned_corpus_dfm <- banned_corpus |>
+  tokens(what = "fastestword", remove_numbers = TRUE) |>
+  tokens_remove(stopwords("en")) |>
+  dfm()
+```
+
+```{r, echo = F}
+#| label: tbl-corpus
+#| tbl-cap: "Here's a summary of the corpus. Note that there are fewer more-banned books."
+ntoken(banned_corpus_dfm) |> 
+  as.data.frame() |>
+  rownames_to_column("Text_Type") |>
+  select(Text_Type, Tokens = `ntoken(banned_corpus_dfm)`) |>
+  mutate(Text_Type = str_extract(Text_Type, "^[^\\d]+")) |>
+  group_by(Text_Type) |>
+  summarize(Texts = n(),
+    Tokens = sum(Tokens)) |>
+    knitr::kable()
+```
+
+## Florida Man Bans Books
+
+From @tbl-bannedStates, it's evident that Florida has banned a vast majority of the books in this dataset. For this reason, this analysis will also focus on the dates of those book bans in order to see if there is any potential association between the dates of those book bans and any newsworthy events at that time in the United States. In addition to the statistical computations that are explained in the *Methods* section, this analysis will also conduct a qualitative investigation of the political atmosphere and legislation that could be related to the trends in banned books in Florida, both based on quantity -- such as the spike in October 2023 in @fig-floridaBanns -- and in linguistic trends identified in the *Results* section.
+
+:::: {layout="[ 40, 10, 60]"}
+
+::: {#first-column}
+
+```{r}
+#| label: tbl-bannedStates
+#| tbl-cap: "Top five states that have banned the most books in this dataset"
+banned |>
+  pivot_longer(
+    cols = starts_with("Alaska"):starts_with("Wyoming"), # specify columns for states
+    names_to = "State",    # new column for state names
+    values_to = "Present", # new column to indicate presence
+    values_drop_na = TRUE  # drop rows where value is NA (absence of state)
+  ) |> 
+  filter(Present) |>
+  select(title, author, State) |>
+  unique() |>
+  group_by(State) |>
+  summarize(num_books = n()) |>
+    rename(`# Banned Books` = num_books) |>
+  arrange(desc(`# Banned Books`)) |>
+  head(5) |> 
+  knitr::kable()
+```
+
+:::
+
+::: {#second-column}
+
+$\ $
+
+:::
+
+::: {#third-column}
+
+```{r}
+#| label: fig-floridaBanns
+#| fig-cap: "Florida had the most book bans completed in October 2023."
+ann_map <- annotation |>
+  left_join(select(banned, doc_id, Florida.Banned,
+                   goodreads_avg_rating),
+            by = join_by("doc_id"))
+ann_map |>
+  drop_na(Florida.Banned) |>
+  mutate(goodreads_avg_rating = factor(round(goodreads_avg_rating)),
+         Florida.Banned = as.Date(Florida.Banned),
+         Florida.Banned_x = format(Florida.Banned, "%b %y"),
+         Florida.Banned_x = factor(Florida.Banned_x,
+                                levels = unique(Florida.Banned_x[order(Florida.Banned)]))) |>
+  rename(`Average Rating` = goodreads_avg_rating) |>
+  ggplot(aes(x = Florida.Banned_x,
+             fill = `Average Rating`)) + 
+  geom_bar() +
+  scale_fill_manual(values = c("red", 
+                               "orange",
+                               "tomato")) + 
+  theme_classic() + 
+   theme(legend.position = "top") + xlab("Date of Book Ban in Florida") +
+  ylab("Count")
+```
+
+:::
+
+::::
+
+
+# Methods
+
+This analysis will use multi-dimensional factor analysis of the Biber features in order to assess if there are any distinct literary differences between more-banned and less-banned books. This will be accomplished by analyzing the factor loadings of the MDA model and seeing how those factors are distributed for more-banned and less-banned books (@mdaBiber). For comparison, this analysis will also view the distribution of these factors across the average Goodreads ratings for these books to see if there are certain features that indicate higher or lower public opinion of these descriptions. Note that the people who rate books on Goodreads are likely to also read the Goodreads descriptions, which indicates the relevance of comparing the MDA factor distribution across different average ratings. Finally, two F-tests are used to determine if the two MDA factors are independent across the more-banned and less-banned books at a significance level of $\alpha = 0.05$ with a Bonferroni correction for the two tests. Two additional F-tests are used to determine if the two MDA factor are independent across the Goodreads ratings at a significance level of $\alpha = 0.05$ with a Bonferroni correction for the two tests.
+
+In addition, this analysis will use keyness -- after dropping stopwords -- in order to determine which words are keywords with the more-banned books as the target corpora and the less-banned books as the reference corpora (@brezinaKey). One of the main benefits of using Goodreads descriptions is that these keywords may indicate controversial topics -- such as "queer", "gay", "sex", "violence", etc. -- that may have led to the book bans. According to @keyKey, a "key keyword" is a keyword that is "key" in more than one of the related texts: after calculating the keyness values of the target corpus against the reference corpus, we only keep the texts that reach a significance threshold of 5%. We arrange these words in descending order based on their key range, which is the percent of texts in the target corpus for which keyness reaches the specified threshold. These are our key-keywords. Of the top 10 keywords, we will explore the frequency of the words with an effect mean over 3.8. Note that the effect means are the mean effect size by log ratio, which would yield key-keywords that are largely different between the target and reference corpora. Then, this analysis will compare the frequency of these words across the timeline of the book bans in Florida. We are using Florida as a case study because Florida accounts for a majority of the book bans in this dataset. This can guide further research into why these book bans were implemented at that specific time by investigating the social and political events at the time.
+
+# Results
+
+## Multi-Dimensional Factor Analysis of Biber Features
+
+```{r, echo = F}
+ratings <- banned |>
+  select(doc_id, goodreads_avg_rating) |>
+  mutate(doc_id = as.factor(doc_id),
+         goodreads_avg_rating = as.factor(round(goodreads_avg_rating)))
+biber_fts_ratings <- biber_fts |>
+  left_join(ratings, by = join_by(doc_id)) |>
+  select(-doc_id)
+biber_fts$doc_id <- as.factor(gsub("[[:digit:]]", "",biber_fts$doc_id))
+banned_mda <- mda_loadings(biber_fts, n_factors = 3)
+ratings_mda <- mda_loadings(biber_fts_ratings, n_factors = 3)
+```
+
+```{r}
+banned_aov1 <- broom::tidy(aov(Factor1 ~ group, data = banned_mda)) |>
+  select(term, df, statistic, p.value)
+banned_aov2 <- broom::tidy(aov(Factor2 ~ group, data = banned_mda)) |>
+  select(term, df, statistic, p.value) 
+ratings_aov1 <- broom::tidy(aov(Factor1 ~ group, data = ratings_mda)) |>
+  select(term, df, statistic, p.value) 
+ratings_aov2 <- broom::tidy(aov(Factor2 ~ group, data = ratings_mda)) |>
+  select(term, df, statistic, p.value) 
+```
+
+
+The screeplot determines that two factors are sufficient to account for a large portion of the variation in these description (see @fig-screeplot). We reject the F-test (F(`r banned_aov1$df[1]`, `r banned_aov1$df[2]`) = `r round(banned_aov1$statistic[1], 2)`, p < 0.001) for the null hypothesis that the groups of more-banned vs. less-banned books are independent of their dimension scores for factor 1 at a significance of 2.5%.
+We reject the F-test (F(`r banned_aov2$df[1]`, `r banned_aov2$df[2]`) = `r round(banned_aov2$statistic[1], 2)`, p < 0.001) for the null hypothesis that the groups of more-banned vs. less-banned books are independent of their dimension scores for factor 2 at a significance of 2.5%.
+We reject the F-test (F(`r ratings_aov1$df[1]`, `r ratings_aov1$df[2]`) = `r round(ratings_aov1$statistic[1], 2)`, p < 0.001) for the null hypothesis that the groups of different Goodreads ratings are independent of their dimension scores for factor 1 at a significance of 2.5%.
+We reject the F-test (F(`r ratings_aov2$df[1]`, `r ratings_aov2$df[2]`) = `r round(ratings_aov2$statistic[1], 2)`, p < 0.001) for the null hypothesis that the groups of different Goodreads ratings are independent of their dimension scores for factor 2 at a significance of 2.5%. In response to the first research question, this shows that there are literary differences between more-banned and less-banned books.
+
+```{r, warning = F}
+my_stickplot_mda <- function (mda_data, n_factor = 1,
+                              ylim1, ylim2, size) 
+{
+  if (!inherits(mda_data, "mda")) {
+    stop("Your mda_data must be an mda object.")
+  }
+  if (!is.numeric(n_factor) || n_factor < 1) {
+    stop("n_factor must be a positive integer.")
+  }
+  if (n_factor > attributes(mda_data)$n_factors) {
+    stop("n_factor is set larger than the number of factors")
+  }
+  scores <- attributes(mda_data)$group_means
+  factor_n <- paste0("Factor", n_factor)
+  scores <- dplyr::mutate(scores, pos_neg = ifelse(!!as.name(factor_n) > 
+    0, "High", "Low"))
+  p1 <- ggplot2::ggplot(scores, ggplot2::aes(y = !!as.name(factor_n), 
+    x = 1, label = .data$group, fill = .data$pos_neg)) + 
+    ggplot2::geom_point(shape = 21) + viridis::scale_fill_viridis(discrete = TRUE) + 
+    ggplot2::theme_classic() + 
+    ggplot2::theme(axis.line.x = ggplot2::element_blank(), 
+    axis.ticks.x = ggplot2::element_blank(), 
+    axis.text.x = ggplot2::element_blank(), 
+    axis.title = ggplot2::element_blank()) + ggrepel::geom_text_repel(nudge_x = 0.25, 
+    direction = "y", hjust = 0, segment.size = 0.1, size = size) + 
+    ggplot2::xlim(1, 2) + ggplot2::theme(legend.position = "none") + ylim(ylim1, ylim2)
+  p1
+}
+```
+
+```{r, warning = F}
+my_heatmap_mda <- function(mda_data, mda_data2, n_factor = 1, ylim1, ylim2) 
+{
+  if (!inherits(mda_data, "mda")) {
+    stop("Your mda_data must be an mda object.")
+  }
+  if (!is.numeric(n_factor) || n_factor < 1) {
+    stop("n_factor must be a positive integer.")
+  }
+  loadings <- attributes(mda_data)$loadings
+  threshold <- attributes(mda_data)$threshold
+  factor_n <- paste0("Factor", n_factor)
+  loadings <- data.frame(var_cat = row.names(loadings), loadings)
+  loadings <- tidyr::pivot_longer(loadings, -.data$var_cat, 
+    names_to = "factor")
+  loadings <- dplyr::filter(loadings, .data$factor == factor_n)
+  loadings <- dplyr::arrange(loadings, .data$value)
+  loadings <- dplyr::filter(loadings, .data$value > threshold | 
+    .data$value < -threshold)
+  loadings <- dplyr::mutate(loadings, text_label = format(round(.data$value, 
+    3)))
+  loadings <- dplyr::mutate(loadings, pos_neg = ifelse(.data$value > 
+    0, "High", "Low"))
+  loading_max <- ifelse(max(loadings$value) > 1, max(loadings$value), 
+    1)
+  loading_min <- ifelse(min(loadings$value) < -1, min(loadings$value), 
+    -1)
+  p1 <- my_stickplot_mda(mda_data, n_factor,
+                         ylim1, ylim2, size = 4)
+  p4 <- my_stickplot_mda(mda_data2, n_factor,
+                         ylim1, ylim2, size = 5)
+  p2 <- ggplot2::ggplot(data.frame(x = 0, y = -2:2), ggplot2::aes(.data$x, 
+    .data$y)) + ggplot2::annotate("segment", x = 0, xend = 0, 
+    y = 1, yend = 2, linewidth = 0.25, arrow = ggplot2::arrow(length = ggplot2::unit(0.25, 
+      "cm")), color = "gray40") + ggplot2::annotate("segment", 
+    x = 0, xend = 0, y = -1, yend = -2, linewidth = 0.25, 
+    arrow = ggplot2::arrow(length = ggplot2::unit(0.25, 
+      "cm")), color = "gray40") + ggplot2::theme_void() + 
+    ggplot2::theme(plot.margin = ggplot2::unit(c(-0.9, -5, 
+      -0.9, -1), "lines"))
+  if (sum(loadings$pos_neg == "High") > 0 && sum(loadings$pos_neg == 
+    "Low") > 0) {
+    p3 <- ggplot2::ggplot(loadings, ggplot2::aes(x = .data$factor, 
+      y = reorder(.data$var_cat, .data$value), fill = .data$value)) + 
+      ggrepel::geom_text_repel(ggplot2::aes(label = .data$var_cat), 
+        hjust = 0, nudge_x = 1.5, segment.size = 0.1, 
+        size = 2.5, box.padding = 0.05) + ggplot2::geom_tile(ggplot2::aes(width = 0.25, 
+      height = 0.9)) + ggplot2::geom_text(ggplot2::aes(label = .data$text_label, 
+      color = .data$pos_neg), size = 3) + ggplot2::scale_colour_manual(values = c("black", 
+      "black")) + ggplot2::scale_fill_gradientn(limits = c(loading_min, 
+      loading_max), colours = c("orange", 
+      "white", "red"), breaks = c(-threshold, 
+      threshold)) + ggplot2::theme_void() + ggplot2::theme(legend.position = "none") + 
+      ggplot2::facet_wrap(~pos_neg, ncol = 1) + ggplot2::theme(strip.background = ggplot2::element_blank(), 
+      strip.text.x = ggplot2::element_blank()) + ggplot2::theme(plot.margin = ggplot2::unit(c(0.1, 
+      0.25, 0.1, -2), "lines"))
+  }
+  if (sum(loadings$pos_neg == "High") > 0 && sum(loadings$pos_neg == 
+    "Low") == 0) {
+    p3 <- ggplot2::ggplot(loadings, ggplot2::aes(x = .data$factor, 
+      y = reorder(.data$var_cat, .data$value), fill = .data$value)) + 
+      ggrepel::geom_text_repel(ggplot2::aes(label = .data$var_cat), 
+        hjust = 0, nudge_x = 1.5, segment.size = 0.1, 
+        size = 2.5, box.padding = 0.05) + ggplot2::geom_tile(ggplot2::aes(width = 0.25, 
+      height = 0.9)) + ggplot2::geom_text(ggplot2::aes(label = .data$text_label, 
+      color = .data$pos_neg), size = 3) + ggplot2::scale_colour_manual(values = c("black", 
+      "black")) + ggplot2::scale_fill_gradientn(limits = c(loading_min, 
+      loading_max), colours = c("orange", 
+      "white", "red"), breaks = c(-threshold, 
+      threshold)) + ggplot2::theme_void() + ggplot2::theme(legend.position = "none") + 
+      ggplot2::theme(plot.margin = ggplot2::unit(c(0.1, 
+        0.25, nrow(loadings) * 4, -2), "lines"))
+  }
+  if (sum(loadings$pos_neg == "High") == 0 && sum(loadings$pos_neg == 
+    "Low") > 0) {
+    p3 <- ggplot2::ggplot(loadings, ggplot2::aes(x = .data$factor, 
+      y = reorder(.data$var_cat, .data$value), fill = .data$value)) + 
+      ggrepel::geom_text_repel(ggplot2::aes(label = .data$var_cat), 
+        hjust = 0, nudge_x = 1.5, segment.size = 0.1, 
+        size = 2.5, box.padding = 0.05) + ggplot2::geom_tile(ggplot2::aes(width = 0.25, 
+      height = 0.9)) + ggplot2::geom_text(ggplot2::aes(label = .data$text_label, 
+      color = .data$pos_neg), size = 3) + ggplot2::scale_colour_manual(values = c("black", 
+      "black")) + ggplot2::scale_fill_gradientn(limits = c(loading_min, 
+      loading_max), colours = c("orange", 
+      "white", "red"), breaks = c(-threshold, 
+      threshold)) + ggplot2::theme_void() + ggplot2::theme(legend.position = "none") + 
+      ggplot2::theme(plot.margin = ggplot2::unit(c(nrow(loadings) * 
+        4, 0.25, 0.1, -2), "lines"))
+  }
+  p4 <- ggpubr::ggarrange(p1, p4, p2, p3, nrow = 1, widths = c(1, 1, 0.1, 1.5))
+  p4
+}
+```
+
+
+@fig-mda1 shows that factor 1 is positively correlated with usage of third-person pronouns, the present tense and private verbs. Factor 1 is also negatively correlated with the usage of larger words, and Factor 1 yields high scores for more-banned books and low scores for less-banned books. In addition, moderate average Goodreads ratings -- scores of 3 or 4 -- have high dimension scores, like more-banned books, and more extreme Goodreads ratings -- scores of 2 or 5 -- have lower dimension scores, like the less-banned books.
+
+```{r, echo = F, warning = F}
+#| label: fig-mda1
+#| fig-cap: "While both types of factors are statistically significant, the factor for Goodreads ratings has a larger spread than the factor for more-banned vs. less-banned."
+#| fig-height: 3
+my_heatmap_mda(banned_mda, ratings_mda, n_factor = 1,
+               -3.5, 1.1)
+```
+
+
+@fig-mda2 shows that Factor 2 is positively correlated with usage of *be* as a main verb, predicative adjectives, and *it* as a pronoun. Factor 1 yields high scores for more-banned books and low scores for less-banned books. In addition, books with lower Goodreads ratings have higher dimension scores for factor 2, and books with higher Goodreads ratings have lower dimension scores.
+
+
+```{r, warning = F}
+#| label: fig-mda2
+#| fig-height: 3
+#| fig-cap: "There aren't any Biber features with which Factor 2 is strongly negatively correlated."
+my_heatmap_mda(banned_mda, ratings_mda, n_factor = 2,
+               -1.1, 1.1)
+```
+
+
+## Keyness
+
+The descriptions for more-banned books are used as the target corpora, and the descriptions for less-banned books are used as the reference corpora. Both corpora are thresholded by a minimum frequency of 1. We sort by the top 10 key keywords based on the percent of texts in the target corpus for which keyness reaches the specified threshold of 0.05 (@tbl-keykeyFull). In response to the second research question, these are the keywords that differ between more-banned and less-banned books. Note that we removed tokens that were incorrectly parsed, such as *s*, *n't* and *isbn*. From this subset, the highlighted words have an effect mean, which is the mean effect size by log ratio, greater than 3.8 (@tbl-keyness). The frequencies of these words will be explored in the descriptions of banned books in Florida.
+
+```{r}
+MoreBanned_dfm <- dfm_subset(banned_corpus_dfm, text_type == "MoreBanned") |> 
+  dfm_trim(min_termfreq = 1)
+LessBanned_dfm <- dfm_subset(banned_corpus_dfm, text_type == "LessBanned") |> 
+  dfm_trim(min_termfreq = 1)
+MoreBanned_kw <- keyness_table(MoreBanned_dfm, LessBanned_dfm)
+kk <- key_keys(MoreBanned_dfm, LessBanned_dfm)
+
+kk_binded <- kk |>
+  select(token, key_range, effect_mean) |>
+  rename(Token = token,
+         `Key Range` = key_range,
+         `Effect Mean` = effect_mean) |>
+  arrange(desc(`Key Range`))
+```
+
+
+```{r}
+#| label: tbl-keyness
+#| fig-cap: "All of the effect means are positive, which indicates that these key words have higher frequency in the target corpora (i.e. the more-banned books)."
+kk_binded[c(2:6), ] |>
+  rename(`Token ` = Token,
+         `Key Range ` = `Key Range`,
+         `Effect Mean ` = `Effect Mean`) |>
+  cbind(kk_binded[c(7:8, 10:12), ]) |>
+  gt::gt() |>
+  tab_style(
+    style = list(
+      cell_fill(color = "orange"),
+      cell_text(weight = "bold")
+      ),
+    locations = cells_body(
+      columns = Token,
+      rows = `Effect Mean` > 3.8
+    )
+  ) |>
+  tab_style(
+    style = list(
+      cell_fill(color = "orange"),
+      cell_text(weight = "bold")
+      ),
+    locations = cells_body(
+      columns = `Token `,
+      rows = `Effect Mean ` > 3.8
+    )
+  )
+```
+
+## Florida Frequency Distributions
+
+```{r, message = F}
+florida_annotate <- annotation |>
+  left_join(select(banned, doc_id, Florida.Banned,
+                   goodreads_avg_rating),
+            by = join_by("doc_id"))
+florida_annotate <- florida_annotate |>
+  group_by(lemma, Florida.Banned) |>
+  summarize(n_lemma = n()) |>
+  ungroup() |>
+  group_by(Florida.Banned) |>
+  mutate(n_month = sum(n_lemma)) |>
+  ungroup() |>
+  mutate(n_lemma = n_lemma/n_month)
+```
+
+
+```{r}
+cover_florida <- florida_annotate |>
+  filter(str_detect(lemma, "cover")) |>
+  drop_na(Florida.Banned)
+question_florida <- florida_annotate |>
+  filter(str_detect(lemma, "question")) |>
+  drop_na(Florida.Banned)
+unforgettable_florida <- florida_annotate |>
+  filter(str_detect(lemma, "unforgettable")) |>
+  drop_na(Florida.Banned)
+leave_florida <- florida_annotate |>
+  filter(str_detect(lemma, "leave")) |>
+  drop_na(Florida.Banned)
+gay_florida <- florida_annotate |>
+  filter(str_detect(lemma, "gay")) |>
+  drop_na(Florida.Banned)
+```
+
+```{r}
+#| echo: false
+spark_bar <- function(data, name) {
+  p <- ggplot(data,
+              aes(x = Florida.Banned, y = n_lemma)) +
+    geom_col(fill = "orange") +
+    theme_void() +
+    theme(plot.margin = margin(0, 0, 0, 0))
+    f <- paste0(name, ".png")
+    ggsave(f, p, width = 0.5, height = 0.3, dpi = 300)
+    knitr::asis_output(paste0("![](", f, ")"))
+}
+```
+
+Now, from the subset of words determined above, we will analyze the distributions for lemmas in Florida banned books across the months between July 2023 until June 2024. These distributions are scaled by the total number of tokens in each month in order to account for the non-uniform distribution of banned books in Florida (see @fig-floridaBanns).
+
+
+
+The distribution of the lemmas related to *cover* -- `r spark_bar(cover_florida, "cover_spark")` -- and the lemmas related to *unforgettable*-- `r spark_bar(unforgettable_florida, "unforgettable_spark")` -- seem fairly uniform across the different months. The distribution for the lemmas of *leave* -- `r spark_bar(leave_florida, "leave_spark")` -- have a slight mode around March 2024. The distribution for the lemmas of *question* -- `r spark_bar(question_florida, "question_spark")` -- seems bimodal, with a spike in August 2023 and June 2024. The frequency distribution for the lemmas of *gay* -- `r spark_bar(gay_florida, "gay_spark")` -- is the most extreme with a large spike in January 2024. This addresses the third research question regarding how the frequency of these keywords differ throughout the year.
+
+# Discussion
+
+More-banned books have higher dimension scores on Factor 1 of the MDA analysis, which are positively correlated with third-person pronouns and private verbs. These linguistic features are likely used to describe characters and their action because third-person pronouns refer to people and private verbs indicate how people feel. It's possible that more-banned books tend to be about the experiences of people, such as memoirs and fictional stories about marginalized groups, which leads to their banned status. Books with moderate Goodreads ratings also have higher dimension scores for Factor 1. Perhaps, this means that these character-centric books get more varied responses from the public because they indulge in niche, identity-related stories. More-banned books and books with low Goodreads ratings also have higher dimension scores on Factor 2, which is positively correlated with using *be* as the main verb and predicative adjectives. This kind of language is used to describe nouns. Perhaps this is present in the descriptions of banned books because it explicitly describes a character, which makes it easier to identify the topics of the book (and consequentially easier to find reasons to ban the book). In addition, this could explain the lower Goodreads ratings because it's too blunt without the nuisance of less explicitly descriptive language.
+
+From the keyness analysis, there are keywords that differ between the Goodreads descriptions of more-banned and less-banned books, such as *cover*, *leave*, *unforgettable*, *question* and *gay*. It's easier to intuit why certain words may have increased prevalence as keywords with higher frequency in the target corpora of more-banned books. For example, while not one of the keywords used for the Florida frequency analysis, the prevalence of *edition* may be because certain banned books are older and have had many iterations published, such as *Handmaid’s Tale*. In addition, the frequency distributions for *gay* across the Florida banned books reflects the general controversy around books about sexuality, particularly in schools. This answers the third research question that some of the frequencies of these keywords do differ based on when they were banned within the year. An interesting next step would be to use clustering to see if some of these words have a higher prevalence to a statistically significant degree within certain parts of the year.
+
+
+Since this focuses on the banned books within a single year, it would be harder to generalize the results to additional years. In addition, this is only a subset of the total books that were banned within the time-period of July 2023 and June 2024 because we could not successfully scrape the Goodreads descriptions for all books in PEN America's list (@penAmerica). We cannot determine if there is any confounding between the included and excluded banned books. In addition, the dates for when certain book bans went into effect are missing from the original PEN America dataset, which limits the Florida frequency analysis.
+
+
+## Florida vs. Queer Literature
+
+```{r, echo = F}
+florida_gay_banned <- annotation |>
+  left_join(select(banned, doc_id, Florida.Banned,
+                   title, goodreads_description),
+            by = join_by("doc_id")) |>
+  filter(lemma == "gay") |>
+  select(title, goodreads_description, Florida.Banned) |>
+  unique() |>
+  drop_na(Florida.Banned)
+```
+
+The spike in the lemma *gay* in January 2024 for Florida banned books is accounted for by a single novel, "Brave Face: A Memoir", by Shaun David Hutchinson. The excerpt from the Goodreads description below is provided below:
+
+> ...“I wasn’t depressed because I was **gay**. I was depressed and **gay**.”
+> Shaun David Hutchinson was nineteen. Confused. Struggling to find the vocabulary to understand and accept who he was and how he fit into a community in which he couldn’t see himself. The voice of depression told him that he would never be loved or wanted, while powerful and hurtful messages from society told him that being **gay** meant love and happiness weren’t for him... (@braveface)
+
+According to a KUOW article, which is Seattle’s NPR news station, the author currently lives in Seattle but grew up in Florida (@kuow2024). Hutchinson wrote this memoir so "that this book existed, that didn't exist when [he] was that age". This book, along with his other book, "We Are The Ants", are both banned in Florida schools. This article also mentions two other books that are both banned in Florida and have the lemma *gay* in this descriptions: "Tricks", by Ellen Hopkins and "Gender Queer: A Memoir", by Maia Kobabe. The Goodreads descriptions for both are provided below:
+
+Excerpt from "Tricks", by Ellen Hopkins (@tricks):
+
+> Five teenagers from different parts of the country. Three girls. Two guys. Four straight. One **gay**...
+
+Excerpt from "Gender Queer: A Memoir", by Maia Kobabe (@genderQueer):
+
+> ...Maia's intensely cathartic autobiography charts eir journey of self-identity, ... bonding with friends over erotic **gay** fanfiction, and facing the trauma of pap smears...
+
+It's evident that Goodreads descriptions can be indicative of which books certain states would like to ban, especially with Florida's bans against queer literature. By focusing on books banned within a single year, we can investigate relevant legislation during this time period. Notable Florida legislation related to banning books, especially in schools, are as follows. HB 1467, which went into effect on July 2022, requires schools and educators to be transparent about what materials are used in class and making sure that those instructional materials are vetted (@HB_1467). HB 1069, which went into effect on July 2023, provided requirements about teaching topics including pronouns, reproductive health and human sexuality as well as providing that the district school boards are responsible for materials used in classroom libraries (@HB_1069). HB 1285, which went into effect on July 2024, states that residents who do not have a child with access to the district materials can only object to one material per month (@HB_1285)
+
+The transparency mandated by HB 1467 likely gave parents and other community members more awareness of what books their students were learning in class. HB 1069 went into effect right at the beginning of the time period covered by this dataset and could be responsible for the higher counts for Florida book bans in July 2023 - October 2024 (see @fig-floridaBanns). This legislation also targeted queer literature, like Hutchinson highlighted. While the effects of HB 1285 are out of scope of this dataset, it does show potential for repeating this analysis for the next year's data -- July 2024 to June 2025 -- to see if these limits reduced the number of book bans in Florida or changed the linguistic features in the Goodreads descriptions.
+
+## There's Still Hope
+
+While such excessive banning of books feels as dystopian as "Fahrenheit 451", there is still pushback from the public. For example, HB 1285 shows some legislative limits to how many books people are banning (@HB_1285). In addition, there are community efforts to push back against these book bans, including from the authors themselves such as Hutchinson (@kuow2024). There are also organizational efforts, such as the Little Free Library program. This nonprofit works to provide 24/7 open access to books and have an interactive map that highlights both book ban hotspots -- including in Florida -- and nearby Little Free Library locations, which include access to banned books specifically (@FreeLittleLibrary). These efforts give hope that there are plenty of people fighting against these book bans and fighting for access to literature, regardless of the topic. After all, "the books are to remind us what asses and fools we are" (@fahrenheit).
+
+
+{{< pagebreak >}}
+
+# Appendix {.appendix}
+
+```{r}
+#| label: tbl-keykeyFull
+#| fig-cap: "Top 20 key keywords, ordered by descending key range"
+kk |>
+  rename(Token = token,
+         `Key Mean` = key_mean,
+         `Key SD` = key_sd,
+         `Key Range` = key_range,
+         `Effect Mean` = effect_mean) |>
+  arrange(desc(`Key Range`)) |>
+  head(20) |>
+  knitr::kable()
+```
+
+
+```{r}
+#| label: fig-screeplot
+#| fig-cap: "Elbow is at 2 factors"
+screeplot_mda(biber_fts)
+```
+
+# Acknowledgments
+
+Generative AI was used to implement the algorithm for the web scraper that was used to create this dataset and to create the sparkline graphics in the Results section.
+
+# Works Cited
